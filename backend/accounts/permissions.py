@@ -53,3 +53,20 @@ class IsAdminOrStaffOrCustomerReadOwn(BasePermission):
         if user.role == "CUSTOMER":
             return request.method in SAFE_METHODS
         return False
+
+
+class SubscriptionPlanChangePermission(BasePermission):
+    """Customers may invoke only the plan-change actions on their own rows."""
+
+    def has_permission(self, request, view):
+        user = request.user
+        if not (user and user.is_authenticated):
+            return False
+        if user.role in ("ADMIN", "STAFF"):
+            return True
+        if user.role == "CUSTOMER":
+            return request.method in SAFE_METHODS or view.action in (
+                "preview_proration",
+                "change_plan",
+            )
+        return False

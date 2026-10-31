@@ -25,7 +25,7 @@ class Discount(models.Model):
     is_active=models.BooleanField(default=True)
 
 class Invoice(models.Model):
-    class Status(models.TextChoices): DRAFT="DRAFT","Draft"; CONFIRMED="CONFIRMED","Confirmed"; PAID="PAID","Paid"; CANCELLED="CANCELLED","Cancelled"
+    class Status(models.TextChoices): DRAFT="DRAFT","Draft"; CONFIRMED="CONFIRMED","Confirmed"; PAID="PAID","Paid"; PAYMENT_FAILED="PAYMENT_FAILED","Payment failed"; CANCELLED="CANCELLED","Cancelled"
     number=models.CharField(max_length=40,unique=True)
     customer=models.ForeignKey(CustomerProfile,on_delete=models.PROTECT)
     subscription=models.ForeignKey(Subscription,on_delete=models.PROTECT,related_name="invoices")
@@ -37,10 +37,16 @@ class Invoice(models.Model):
     discount_total=models.DecimalField(max_digits=12,decimal_places=2,default=0)
     tax_total=models.DecimalField(max_digits=12,decimal_places=2,default=0)
     total=models.DecimalField(max_digits=12,decimal_places=2,default=0)
-    status=models.CharField(max_length=12,choices=Status.choices,default=Status.DRAFT)
+    status=models.CharField(max_length=20,choices=Status.choices,default=Status.DRAFT)
+    is_adjustment=models.BooleanField(default=False)
+    is_deferred_adjustment=models.BooleanField(default=False)
+    first_failed_at=models.DateTimeField(null=True,blank=True)
+    grace_period_end=models.DateTimeField(null=True,blank=True)
+    first_failure_reason=models.TextField(blank=True)
+    dunning_notification_logged_at=models.DateTimeField(null=True,blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
     class Meta:
-        constraints=[models.UniqueConstraint(fields=["subscription","billing_period_start","billing_period_end"],name="unique_subscription_billing_period")]
+        constraints=[models.UniqueConstraint(fields=["subscription","billing_period_start","billing_period_end"],condition=models.Q(is_adjustment=False),name="unique_subscription_billing_period")]
         indexes=[models.Index(fields=["status","due_date"])]
 
 class InvoiceItem(models.Model):
@@ -59,3 +65,27 @@ class Payment(models.Model):
     note=models.TextField(blank=True)
     reference=models.CharField(max_length=120,blank=True)
     created_at=models.DateTimeField(auto_now_add=True)
+
+class DunningAttempt(models.Model):
+    class Status(models.TextChoices):
+        PENDING="PENDING","Pending"
+        FAILED="FAILED","Failed"
+        SUCCEEDED="SUCCEEDED","Succeeded"
+        SKIPPED="SKIPPED","Skipped"
+
+    invoice=models.ForeignKey(Invoice,on_delete=models.CASCADE,related_name="dunning_attempts")
+    subscription=models.ForeignKey(Subscription,on_delete=models.PROTECT,related_name="dunning_attempts")
+    attempt_number=models.PositiveSmallIntegerField()
+    attempt_date=models.DateTimeField(null=True,blank=True)
+    scheduled_for=models.DateTimeField()
+    status=models.CharField(max_length=12,choices=Status.choices,default=Status.PENDING)
+    failure_reason=models.TextField(blank=True)
+    simulated_gateway_response=models.JSONField(default=dict,blank=True)
+    created_at=models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering=["attempt_number"]
+        constraints=[
+            models.UniqueConstraint(fields=["invoice","attempt_number"],name="unique_invoice_dunning_attempt"),
+            models.CheckConstraint(condition=models.Q(attempt_number__gte=1,attempt_number__lte=3),name="dunning_attempt_number_range"),
+        ]

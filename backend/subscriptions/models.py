@@ -4,7 +4,7 @@ from catalog.models import Plan, Product
 
 class Subscription(models.Model):
     class Status(models.TextChoices):
-        DRAFT="DRAFT","Draft"; QUOTATION="QUOTATION","Quotation"; CONFIRMED="CONFIRMED","Confirmed"; ACTIVE="ACTIVE","Active"; PAUSED="PAUSED","Paused"; CLOSED="CLOSED","Closed"
+        DRAFT="DRAFT","Draft"; QUOTATION="QUOTATION","Quotation"; CONFIRMED="CONFIRMED","Confirmed"; ACTIVE="ACTIVE","Active"; PAST_DUE="PAST_DUE","Past due"; IN_GRACE_PERIOD="IN_GRACE_PERIOD","In grace period"; SUSPENDED="SUSPENDED","Suspended"; CANCELED="CANCELED","Canceled"; PAUSED="PAUSED","Paused"; CLOSED="CLOSED","Closed"
     number=models.CharField(max_length=40,unique=True)
     customer=models.ForeignKey(CustomerProfile,on_delete=models.PROTECT,related_name="subscriptions")
     plan=models.ForeignKey(Plan,on_delete=models.PROTECT)
@@ -12,7 +12,7 @@ class Subscription(models.Model):
     expiry_date=models.DateField(null=True,blank=True)
     next_billing_date=models.DateField(null=True,blank=True,db_index=True)
     payment_terms=models.CharField(max_length=160,blank=True)
-    status=models.CharField(max_length=12,choices=Status.choices,default=Status.DRAFT,db_index=True)
+    status=models.CharField(max_length=20,choices=Status.choices,default=Status.DRAFT,db_index=True)
     created_at=models.DateTimeField(auto_now_add=True)
     def __str__(self): return self.number
 
