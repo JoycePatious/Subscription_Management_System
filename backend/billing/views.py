@@ -41,8 +41,16 @@ class InvoiceViewSet(CustomerOwnedQuerysetMixin, viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["post"], url_path="retry-payment", permission_classes=[IsAdminOrStaff])
     def retry_payment(self, request, pk=None):
         invoice = self.get_object()
+        gateway_response = None
+        if request.data.get("simulate_success") is True or request.data.get("simulate_outcome") == "succeeded":
+            gateway_response = {"status": "succeeded", "source": "simulated_gateway", "reference": "SIM_SUCC_001"}
+        elif request.data.get("simulate_failure") is True or request.data.get("simulate_outcome") == "failed":
+            gateway_response = {"status": "failed", "reason": request.data.get("reason", "Card declined by issuing bank")}
+        elif "gateway_response" in request.data:
+            gateway_response = request.data["gateway_response"]
+
         try:
-            attempt = execute_dunning_retry(invoice, force=True)
+            attempt = execute_dunning_retry(invoice, gateway_response=gateway_response, force=True)
         except ValueError as error:
             raise serializers.ValidationError({"detail": str(error)}) from error
         if attempt is None:

@@ -72,8 +72,33 @@ def _billing_cycle(subscription, effective_date):
 
 def calculate_proration(subscription, new_plan, effective_date=None):
     """
-    Calculate the unused old-plan credit and remaining-cycle new-plan charge.
-    Both amounts are rounded to the nearest cent using ROUND_HALF_UP.
+    Pure calculation of mid-cycle proration credits, charges, and net adjustment.
+
+    Mathematical Specification:
+    ---------------------------
+    Let TotalDays be cycle days:
+        TotalDays = (CycleEnd - CycleStart).days
+    Let UsedDays be elapsed days:
+        UsedDays = (EffectiveDate - CycleStart).days
+    Let RemainingDays be remaining days:
+        RemainingDays = TotalDays - UsedDays
+    Let OldPlanPrice be recurring price of the current plan.
+    Let NewPlanPrice be recurring price of the target plan.
+
+    Unused Credit (Old Plan):
+        Credit = OldPlanPrice * (RemainingDays / TotalDays)
+
+    Prorated Cost (New Plan):
+        NewCharge = NewPlanPrice * (RemainingDays / TotalDays)
+
+    Net Proration Adjustment:
+        Adjustment = NewCharge - Credit
+
+    Interpretation:
+    - If Adjustment > 0 (Upgrade): Customer owes a prorated upgrade amount (immediate or added to invoice).
+    - If Adjustment < 0 (Downgrade): Customer receives account credit / deferred discount on next invoice.
+
+    All monetary figures are quantized to the nearest cent using Decimal with ROUND_HALF_UP.
     """
     effective_date = effective_date or timezone.localdate()
     if isinstance(effective_date, datetime):
@@ -111,7 +136,18 @@ def calculate_proration(subscription, new_plan, effective_date=None):
 @transaction.atomic
 def apply_plan_change(subscription, new_plan, immediate_invoice=True):
     """
-    Lock and update the subscription, then create signed adjustment invoice lines.
+    Atomic transaction updating the subscription's plan and generating adjustment invoice & items.
+
+    Business Rules:
+    - Prevents changes if subscription is SUSPENDED or CANCELED.
+    - Prevents changes to inactive plans.
+    - Updates subscription.plan foreign key.
+    - Generates automatic signed line items detailing unused credit and prorated charges:
+        * Negative line item for old plan credit (-Credit)
+        * Positive line item for new plan charge (+NewCharge)
+    - If immediate_invoice=True: generates immediate draft adjustment invoice (due today).
+    - If immediate_invoice=False: generates deferred adjustment due on next regular cycle date,
+      which merges into the next cycle's invoice.
     """
     locked_subscription = (
         Subscription.objects.select_for_update()

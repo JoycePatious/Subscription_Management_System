@@ -1,3 +1,42 @@
+"""
+Smart Dunning & Automated Grace-Period Engine for Brightloop Billing.
+
+Business Logic & State Machine Architecture:
+---------------------------------------------
+1. Subscription Statuses:
+   - ACTIVE: Normal operating state with active entitlement.
+   - PAST_DUE: Payment overdue but within initial grace window.
+   - IN_GRACE_PERIOD: Entered upon first payment failure. Entitlement degraded/monitored.
+   - SUSPENDED: Entitlement revoked after 7-day grace period expires with all 3 retries failed.
+   - CANCELED: Subscription closed; exempted from dunning.
+
+2. Invoice Payment Statuses:
+   - DRAFT: Initial invoice creation.
+   - CONFIRMED: Finalized invoice awaiting payment.
+   - PAYMENT_FAILED: Payment declined; enters dunning lifecycle.
+   - PAID: Successfully settled invoice.
+
+3. Grace Period & Retry Schedule:
+   - Grace Window: Exactly 7 days from the initial failure timestamp (first_failed_at).
+   - Retry Spacing: Exactly 3 automatic retry attempts spaced across the grace period:
+     * Attempt 1: +1 day after initial failure
+     * Attempt 2: +3 days after initial failure
+     * Attempt 3: +7 days after initial failure (grace period boundary)
+
+4. Entitlement Degradation & Restoration Flow:
+   - First failure:
+     * Invoice status -> PAYMENT_FAILED
+     * Subscription status -> IN_GRACE_PERIOD
+     * Schedules 3 DunningAttempt rows (attempt_number: 1, 2, 3)
+   - Successful retry on any attempt:
+     * Invoice status -> PAID
+     * Subscription status -> ACTIVE (immediate restoration)
+     * Remaining pending attempts -> SKIPPED
+   - Exhaustion after 7 days:
+     * If all 3 attempts have status FAILED and now >= grace_period_end:
+     * Subscription status -> SUSPENDED (entitlement terminated)
+"""
+
 from datetime import timedelta
 
 from django.db import transaction
@@ -13,7 +52,12 @@ GRACE_PERIOD_DAYS = 7
 
 
 def _simulate_gateway_payment(invoice):
-    """Use recorded payment evidence; otherwise return a predictable decline."""
+    """
+    Simulate gateway payment outcome based on recorded payments.
+    
+    If payments recorded against the invoice meet or exceed the total,
+    simulates a successful gateway transaction. Otherwise returns a simulated decline.
+    """
     recorded_amount = invoice.payments.aggregate(total=Sum("amount"))["total"]
     if recorded_amount is not None and recorded_amount >= invoice.total:
         return {
@@ -27,8 +71,16 @@ def _simulate_gateway_payment(invoice):
 @transaction.atomic
 def process_payment_failure(invoice, reason):
     """
-    Start the seven-day grace period once and schedule retries for days 1, 3, and 7.
-    Repeated failure notifications are idempotent and preserve the original deadline.
+    Process an initial or repeated payment failure on an invoice.
+
+    Transitions:
+    - Invoice: -> PAYMENT_FAILED
+    - Subscription: ACTIVE -> IN_GRACE_PERIOD
+    - Creates 3 scheduled DunningAttempt records for Day 1, Day 3, and Day 7.
+
+    Guarantees:
+    - Atomically locks invoice and subscription records via select_for_update().
+    - Idempotent: Repeated failure notifications preserve the original first_failed_at timestamp.
     """
     locked_invoice = Invoice.objects.select_for_update().select_related("subscription").get(pk=invoice.pk)
     if locked_invoice.status == Invoice.Status.PAID:
